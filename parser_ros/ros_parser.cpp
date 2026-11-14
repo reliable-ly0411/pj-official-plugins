@@ -246,6 +246,17 @@ const std::unordered_map<std::string, RosParser::CatalogEntry>& RosParser::catal
        {.object_type = ObjectType::kPointCloud,
         .parse_scalars = &RosParser::parseScalarsGeneric,
         .parse_object = &RosParser::parseLaserScan}},
+      // Log messages feed the log viewer as sdk::Log objects; the scalar route
+      // keeps the generic flatten so level/line/... stay plottable. Keys are
+      // normalised ("/msg/" stripped), so rcl_interfaces/msg/Log matches too.
+      {"rcl_interfaces/Log",
+       {.object_type = ObjectType::kLog,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parseLogObject}},
+      {"rosgraph_msgs/Log",
+       {.object_type = ObjectType::kLog,
+        .parse_scalars = &RosParser::parseScalarsGeneric,
+        .parse_object = &RosParser::parseLogObject}},
       // foxglove_msgs/CompressedPointCloud — opaque compressed cloud (draco/cloudini/…).
       // The parser repackages the blob + format; it does not decode. Its scalar
       // route reads the BARE builtin_interfaces/Time head (this schema has no
@@ -526,9 +537,12 @@ RosParser::CatalogEntry RosParser::selectCatalogEntry(const std::string& msg_typ
       topic_name_ == "robot_description" || topic_name_.ends_with("/robot_description");
   if (catalog_type == "std_msgs/String" && robot_description_topic) {
     // Object-only: the URDF/SDF/MJCF text is consumed as a model, not stored
-    // as a giant string column in the datastore.
+    // as a giant string column in the datastore. The empty scalar route is
+    // still required, as for markers: without parse_scalars the host's
+    // eager-scalar ingest aborts the push and the model never reaches the store.
     entry = CatalogEntry{
         .object_type = PJ::sdk::BuiltinObjectType::kRobotDescription,
+        .parse_scalars = &RosParser::parseScalarsObjectOnly,
         .parse_object = &RosParser::parseRobotDescription};
   }
   return entry;

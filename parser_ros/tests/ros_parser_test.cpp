@@ -1392,14 +1392,14 @@ TEST(RosParserTest, TFMessageProducesFrameTransformsObject) {
   // out of sync with point clouds.
   EXPECT_EQ(ft->transforms[0].parent_frame_id, "world");
   EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
-  EXPECT_EQ(ft->transforms[0].timestamp, 1000);
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 1000);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.x, 1.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
 
   EXPECT_EQ(ft->transforms[1].parent_frame_id, "base_link");
   EXPECT_EQ(ft->transforms[1].child_frame_id, "sensor");
-  EXPECT_EQ(ft->transforms[1].timestamp, 1000);
+  EXPECT_EQ(ft->transforms[1].timestamp_ns, 1000);
   EXPECT_DOUBLE_EQ(ft->transforms[1].translation.y, 5.0);
   EXPECT_DOUBLE_EQ(ft->transforms[1].rotation.z, 0.707);
 }
@@ -1434,8 +1434,8 @@ TEST(RosParserTest, TFMessageZeroStampStaysStaticNonZeroOverridden) {
   const auto* ft = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
-  EXPECT_EQ(ft->transforms[0].timestamp, 0);     // static: zero stamp preserved
-  EXPECT_EQ(ft->transforms[1].timestamp, 7777);  // dynamic: message time
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 0);     // static: zero stamp preserved
+  EXPECT_EQ(ft->transforms[1].timestamp_ns, 7777);  // dynamic: message time
 }
 
 // With "use embedded timestamp" ON the toggle wins: every transform keeps its raw
@@ -1470,8 +1470,8 @@ TEST(RosParserTest, TFMessageEmbeddedTimestampKeepsHeaderStamp) {
   const auto* ft = pj_compat::getBuiltinObject<PJ::sdk::FrameTransforms>(rec->object);
   ASSERT_NE(ft, nullptr);
   ASSERT_EQ(ft->transforms.size(), 2u);
-  EXPECT_EQ(ft->transforms[0].timestamp, 1'000'000'500);  // header stamp preserved
-  EXPECT_EQ(ft->transforms[1].timestamp, 2'000'000'000);
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 1'000'000'500);  // header stamp preserved
+  EXPECT_EQ(ft->transforms[1].timestamp_ns, 2'000'000'000);
 }
 
 TEST(RosParserTest, ClassifiesTFMessageWithoutLoadConfig) {
@@ -1525,7 +1525,7 @@ TEST(RosParserTest, TransformStampedProducesFrameTransformsObject) {
   EXPECT_EQ(ft->transforms[0].child_frame_id, "base_link");
   // Non-zero Header.stamp (5 s), default mode: overridden onto the 999 ns message
   // clock (same resolution as /tf — parseTransformStampedObject shares the handler).
-  EXPECT_EQ(ft->transforms[0].timestamp, 999);
+  EXPECT_EQ(ft->transforms[0].timestamp_ns, 999);
   EXPECT_DOUBLE_EQ(ft->transforms[0].translation.z, 3.0);
   EXPECT_DOUBLE_EQ(ft->transforms[0].rotation.w, 1.0);
 }
@@ -2412,6 +2412,22 @@ TEST(RosParserTest, RobotDescriptionTopicProducesObject) {
   EXPECT_EQ(rd->text, urdf);
 }
 
+TEST(RosParserTest, RobotDescriptionTopicIngestsThroughTheScalarPath) {
+  // The host's eager-scalar ingest calls parse() before the object route; an
+  // object-only handler with no parse_scalars made it fail with "registered
+  // handler has no parse_scalars", so a bag's URDF never reached the store.
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"topic_name":"/robot_description"})"));
+  ASSERT_TRUE(f.bindSchema("std_msgs/String", "string data\n"));
+
+  const std::string urdf = "<robot name=\"r\"><link name=\"base_link\"/></robot>";
+  auto payload = serializeCdr([&urdf](RosMsgParser::NanoCDR_Serializer& enc) { enc.serializeString(urdf); });
+
+  ASSERT_TRUE(f.parse(payload));
+  EXPECT_TRUE(f.recorder.rows().empty()) << "the URDF text is not stored as a scalar column";
+}
+
 TEST(RosParserTest, RobotDescriptionNamespacedTopicProducesObject) {
   RosParserFixture f;
   f.setUp();
@@ -2855,7 +2871,7 @@ TEST(RosParserTest, MarkerArrayProducesSceneEntities) {
 
   EXPECT_EQ(se->entities[0].id, "1:a:1");
   EXPECT_EQ(se->entities[0].frame_id, "world");
-  EXPECT_EQ(se->entities[0].timestamp, 1'000'000'500);
+  EXPECT_EQ(se->entities[0].timestamp_ns, 1'000'000'500);
   ASSERT_EQ(se->entities[0].cubes.size(), 1u);
   EXPECT_DOUBLE_EQ(se->entities[0].cubes[0].size.x, 2.0);
   EXPECT_DOUBLE_EQ(se->entities[0].cubes[0].size.z, 4.0);
@@ -3121,7 +3137,7 @@ TEST(RosParserTest, MarkerDeleteAndDeleteAll) {
   ASSERT_EQ(se->deletions.size(), 2u);
   EXPECT_EQ(se->deletions[0].type, PJ::sdk::SceneEntityDeletion::Type::kMatchingId);
   EXPECT_EQ(se->deletions[0].id, "1:a:5");
-  EXPECT_EQ(se->deletions[0].timestamp, 7'000'000'000);
+  EXPECT_EQ(se->deletions[0].timestamp_ns, 7'000'000'000);
   EXPECT_EQ(se->deletions[1].type, PJ::sdk::SceneEntityDeletion::Type::kAll);
 }
 
@@ -3335,6 +3351,174 @@ TEST(RosParserTest, LaserScanScalarRouteKeepsGenericFlatten) {
   const auto* frame_id = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/header/frame_id");
   ASSERT_NE(frame_id, nullptr);
   EXPECT_EQ(frame_id->string_value, "laser");
+}
+
+// ===== rcl_interfaces/Log + rosgraph_msgs/Log -> sdk::Log =====
+
+static const char* kRosLog2Def =
+    "builtin_interfaces/Time stamp\n"
+    "uint8 level\nstring name\nstring msg\nstring file\nstring function\nuint32 line\n"
+    "================\nMSG: builtin_interfaces/Time\nint32 sec\nuint32 nanosec\n";
+
+static const char* kRosLog1Def =
+    "std_msgs/Header header\n"
+    "byte level\nstring name\nstring msg\nstring file\nstring function\nuint32 line\nstring[] topics\n"
+    "================\nMSG: std_msgs/Header\nuint32 seq\ntime stamp\nstring frame_id\n";
+
+std::vector<uint8_t> serializeRosLog2(
+    int32_t sec, uint32_t nsec, uint8_t level, const std::string& name, const std::string& msg, uint32_t line) {
+  return serializeCdr([&](RosMsgParser::NanoCDR_Serializer& enc) {
+    enc.serialize(RosMsgParser::INT32, RosMsgParser::Variant(sec));
+    enc.serialize(RosMsgParser::UINT32, RosMsgParser::Variant(nsec));
+    enc.serialize(RosMsgParser::UINT8, RosMsgParser::Variant(level));
+    enc.serializeString(name);
+    enc.serializeString(msg);
+    enc.serializeString("node.cpp");
+    enc.serializeString("spin");
+    enc.serializeUInt32(line);
+  });
+}
+
+PJ::Expected<PJ::sdk::ObjectRecord> parseRosLogObject(
+    RosParserFixture& f, const std::vector<uint8_t>& payload, PJ::Timestamp ts) {
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  const PJ::sdk::PayloadView view{PJ::Span<const uint8_t>(payload.data(), payload.size()), {}};
+  return base->parseObject(ts, view);
+}
+
+TEST(RosParserTest, RosLogClassifiedAsLog) {
+  for (const char* type : {"rcl_interfaces/msg/Log", "rcl_interfaces/Log"}) {
+    RosParserFixture f;
+    f.setUp();
+    const std::string def(kRosLog2Def);
+    const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+    ASSERT_TRUE(f.bindSchema(type, kRosLog2Def)) << type;
+    EXPECT_EQ(f.handle.classifySchema(type, def_span), PJ::sdk::BuiltinObjectType::kLog) << type;
+  }
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1"})"));
+  const std::string def(kRosLog1Def);
+  const PJ::Span<const uint8_t> def_span(reinterpret_cast<const uint8_t*>(def.data()), def.size());
+  ASSERT_TRUE(f.bindSchema("rosgraph_msgs/Log", kRosLog1Def, "ros1msg"));
+  EXPECT_EQ(f.handle.classifySchema("rosgraph_msgs/Log", def_span), PJ::sdk::BuiltinObjectType::kLog);
+}
+
+TEST(RosParserTest, RosLog2DecodesAllFields) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("rcl_interfaces/msg/Log", kRosLog2Def));
+
+  auto rec = parseRosLogObject(f, serializeRosLog2(12, 345, 40, "/my_node", "boom", 77), 999);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+  ASSERT_NE(log, nullptr);
+  EXPECT_EQ(log->timestamp_ns, 12LL * 1000000000LL + 345);
+  EXPECT_EQ(log->level, PJ::sdk::Log::Level::kError);
+  EXPECT_EQ(log->source, "/my_node");
+  EXPECT_EQ(log->message, "boom");
+  EXPECT_TRUE(log->category.empty());  // ROS logs have none
+}
+
+TEST(RosParserTest, RosLog2LevelMapping) {
+  using Level = PJ::sdk::Log::Level;
+  const std::vector<std::pair<uint8_t, Level>> table = {{10, Level::kDebug}, {20, Level::kInfo},  {30, Level::kWarning},
+                                                        {40, Level::kError}, {50, Level::kFatal}, {7, Level::kUnknown}};
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("rcl_interfaces/msg/Log", kRosLog2Def));
+  for (const auto& [raw, expected] : table) {
+    auto rec = parseRosLogObject(f, serializeRosLog2(1, 0, raw, "n", "m", 1), 5);
+    ASSERT_TRUE(rec.has_value()) << rec.error();
+    const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+    ASSERT_NE(log, nullptr);
+    EXPECT_EQ(log->level, expected) << "raw level " << static_cast<int>(raw);
+  }
+}
+
+TEST(RosParserTest, RosLog2ZeroStampFallsBackToRecordTimestamp) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("rcl_interfaces/msg/Log", kRosLog2Def));
+  auto rec = parseRosLogObject(f, serializeRosLog2(0, 0, 20, "n", "m", 1), 4242);
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+  ASSERT_NE(log, nullptr);
+  EXPECT_EQ(log->timestamp_ns, 4242);
+}
+
+TEST(RosParserTest, RosLog1DecodesFieldsWithTopics) {
+  using Level = PJ::sdk::Log::Level;
+  const std::vector<std::pair<uint8_t, Level>> table = {{1, Level::kDebug}, {2, Level::kInfo},   {4, Level::kWarning},
+                                                        {8, Level::kError}, {16, Level::kFatal}, {3, Level::kUnknown}};
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.handle.loadConfig(R"({"serialization":"ros1"})"));
+  ASSERT_TRUE(f.bindSchema("rosgraph_msgs/Log", kRosLog1Def, "ros1msg"));
+
+  for (const auto& [raw, expected] : table) {
+    std::vector<uint8_t> payload;
+    auto put = [&payload](const auto& value) {
+      const auto* bytes = reinterpret_cast<const uint8_t*>(&value);
+      payload.insert(payload.end(), bytes, bytes + sizeof(value));
+    };
+    auto put_string = [&](const std::string& s) {
+      put(static_cast<uint32_t>(s.size()));
+      payload.insert(payload.end(), s.begin(), s.end());
+    };
+    put(uint32_t{9});         // header.seq
+    put(uint32_t{3});         // header.stamp.sec
+    put(uint32_t{500});       // header.stamp.nsec
+    put_string("frame");      // header.frame_id
+    put(raw);                 // level
+    put_string("/talker");    // name
+    put_string("hello");      // msg
+    put_string("talker.py");  // file
+    put_string("publish");    // function
+    put(uint32_t{123});       // line
+    put(uint32_t{2});         // topics[2]
+    put_string("/rosout");
+    put_string("/chatter");
+
+    auto rec = parseRosLogObject(f, payload, 5);
+    ASSERT_TRUE(rec.has_value()) << rec.error();
+    const auto* log = pj_compat::getBuiltinObject<PJ::sdk::Log>(rec->object);
+    ASSERT_NE(log, nullptr);
+    EXPECT_EQ(log->timestamp_ns, 3LL * 1000000000LL + 500);
+    EXPECT_EQ(log->level, expected) << "raw level " << static_cast<int>(raw);
+    EXPECT_EQ(log->source, "/talker");
+    EXPECT_EQ(log->message, "hello");
+  }
+}
+
+TEST(RosParserTest, RosLogScalarRouteKeepsGenericFlatten) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("rcl_interfaces/msg/Log", kRosLog2Def));
+  ASSERT_TRUE(f.parse(serializeRosLog2(1, 0, 30, "/n", "careful", 55), 99));
+  ASSERT_EQ(f.recorder.rows().size(), 1u);
+  const auto& row = f.recorder.rows()[0];
+
+  const auto* level = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/level");
+  ASSERT_NE(level, nullptr);
+  EXPECT_DOUBLE_EQ(level->numeric, 30.0);
+  const auto* line = PJ::sdk::testing::ParserWriteRecorder::findField(row, "/line");
+  ASSERT_NE(line, nullptr);
+  EXPECT_DOUBLE_EQ(line->numeric, 55.0);
+}
+
+TEST(RosParserTest, RosLogTruncatedPayloadIsRejected) {
+  RosParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("rcl_interfaces/msg/Log", kRosLog2Def));
+  auto payload = serializeRosLog2(1, 0, 20, "/n", "message text", 5);
+  payload.resize(payload.size() - 12);  // cut into the file string
+  auto rec = parseRosLogObject(f, payload, 5);
+  EXPECT_FALSE(rec.has_value());
+
+  // Header only.
+  payload.resize(8);
+  EXPECT_FALSE(parseRosLogObject(f, payload, 5).has_value());
 }
 
 // ===== /header/stamp diagnostic timeseries =====
