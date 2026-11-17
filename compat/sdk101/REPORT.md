@@ -13,7 +13,7 @@ Snapshot checked on 2026-11-17 in an isolated Debian 13 x86_64 cloud workspace. 
 - Host native CSV rebuild: `ba6ee417d91a01aae778a0ec3a4443a024671123`, `data_load_csv/v1.0.7`, SDK `0.34.1`, current `csv-loader.patch` SHA256 `0f0b6ceaca36e914d8beb458156aeb6c07e87ebe5668d517b1f8d1e69597a442` plus the pinned display-language helper.
 - Host native source-lock also fixes protobuf 1.2.0 (`c843cb210af16cb5832cef85c125513c94f65d50`, SDK0.32.0), assistant 0.2.0 (`ba245df89fb26e7905890654173fe289794410a1`, SDK0.34.1), transform editor 1.0.4 and WebRTC 1.0.1 (`2bc991cae2dba7f9f1468dbf8dd72d89797699bc`, SDK0.20.0), MCAP 1.3.0 (`ffa967324aa03b7d076f91e2bf93aff92ebfbda0`, SDK0.34.1). These locks remain unchanged.
 
-`official-inventory.json` records these source-lock records and all 20 native official entries. There are 18 official core plugins on Windows, plus APBIN; Linux adds the assistant and ROS2 streamer. FFT is an additional feedback-test plugin, not one of those 18 default entries. The native registry is pinned to historical released archive hashes; it does not follow either repository's main.
+[inventory.json](inventory.json) records these source-lock records and all 20 native official entries. There are 18 official core plugins on Windows, plus APBIN; Linux adds the assistant and ROS2 streamer. FFT is an additional feedback-test plugin, not one of those 18 default entries. The native registry is pinned to historical released archive hashes; it does not follow either repository's main.
 
 ## Requested upstream changes
 
